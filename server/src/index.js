@@ -83,7 +83,7 @@ app.use((error, req, res, next) => {
 
 connectDatabase()
   .then(() => {
-    app.listen(port, () =>
+    app.listen(port, "0.0.0.0", () =>
       console.log(`Daymark API listening on http://localhost:${port}`),
     );
   })

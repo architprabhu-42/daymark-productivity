@@ -28,6 +28,7 @@ server/              Express API and MongoDB models
   src/routes/         Account, task, activity, and export endpoints
   .env.example        Local environment variable template
 PROJECT_CONTEXT.md    Concise project and architecture reference
+render.yaml           Render Blueprint for the production web service
 ```
 
 The client keeps the screen state in React and sends JSON requests to the Express API. The API reads the signed-in user from an HTTP-only session cookie, scopes every data query to that user, and stores records in MongoDB. In development, Vite forwards `/api` requests to Express. In production, Express serves the built React files and API from one origin.
@@ -69,7 +70,17 @@ The API listens on port `5000` by default. `CLIENT_ORIGIN` controls the browser 
 | `SAMPLE_ADMIN_EMAIL`    | Email allowed to use the sample workspace                         | `archit@gmail.com`            |
 | `SAMPLE_ADMIN_PASSWORD` | Password required when registering or promoting the admin account | Set a private password        |
 
-For a production build, run `npm install` in `client`, then `npm run build` there. Set `NODE_ENV=production`, configure `MONGODB_URI` and `SESSION_SECRET`, and start the server with `npm start` from `server`. Express serves the generated `client/dist` files. This project includes production-ready same-origin serving, but does not configure or publish to a hosting provider.
+## Deploy to Render
+
+The repository includes a Render Blueprint that builds the React client and runs the Express server as one web service. Express serves the built client and API from the same origin.
+
+1. Push the repository to GitHub, then in Render choose **New → Blueprint** and select the repository.
+2. When prompted, provide `MONGODB_URI` for a MongoDB Atlas database. Render generates `SESSION_SECRET` for the service.
+3. Deploy. The service uses `/api/health` as its health check and deploys new commits to the linked branch automatically.
+
+To enable the optional sample workspace, add `SAMPLE_ADMIN_EMAIL` and `SAMPLE_ADMIN_PASSWORD` as private environment variables in the Render service settings. Make sure your Atlas network access rules allow the Render service to connect.
+
+For a manual production run, build the client with `npm ci --prefix client && npm run build`, then set `NODE_ENV=production`, configure `MONGODB_URI` and `SESSION_SECRET`, and run `npm start` from the project root.
 
 ## API overview
 

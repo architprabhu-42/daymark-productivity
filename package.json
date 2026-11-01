@@ -1,0 +1,11 @@
+{
+  "name": "daymark-productivity-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:client": "npm --prefix client run dev",
+    "dev:server": "npm --prefix server run dev",
+    "build": "npm --prefix client run build",
+    "start": "npm --prefix server start"
+  }
+}

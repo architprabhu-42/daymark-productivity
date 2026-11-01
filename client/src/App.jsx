@@ -86,6 +86,8 @@ export default function App() {
   const [dataLoading, setDataLoading] = useState(false);
   const [appError, setAppError] = useState("");
   const [toast, setToast] = useState(null);
+  const [confirmation, setConfirmation] = useState(null);
+  const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [focus, setFocus] = useState(null);
   const [sampleLoading, setSampleLoading] = useState(false);
   const [clockNow, setClockNow] = useState(Date.now());
@@ -95,7 +97,24 @@ export default function App() {
   }, []);
 
   const showTimerNotification = useCallback(
-    (title, message) => notify(message, title, "timer"),
+    (title, message) => {
+      notify(message, title, "timer");
+      if (!("Notification" in window) || window.Notification.permission !== "granted")
+        return;
+      try {
+        const desktopNotification = new window.Notification(title, {
+          body: message,
+          tag: `daymark-timer-${Date.now()}`,
+          requireInteraction: true,
+        });
+        desktopNotification.onclick = () => {
+          window.focus();
+          desktopNotification.close();
+        };
+      } catch {
+        // Keep the in-app alert if this browser cannot display a desktop notification.
+      }
+    },
     [notify],
   );
 
@@ -240,7 +259,7 @@ export default function App() {
   }, [focus, notify, remainingMs, showTimerNotification, user]);
 
   useEffect(() => {
-    if (!toast) return undefined;
+    if (!toast || toast.type === "timer") return undefined;
     const timeout = window.setTimeout(() => setToast(null), 4600);
     return () => window.clearTimeout(timeout);
   }, [toast]);
@@ -294,11 +313,7 @@ export default function App() {
     notify("Task updated.");
   }
 
-  async function setTaskCompletion(task, completed) {
-    // Ask only for the consequential direction; reopening a task stays one click.
-    if (completed && !window.confirm(`Mark “${task.title}” as completed?`)) {
-      return;
-    }
+  async function saveTaskCompletion(task, completed) {
     try {
       const result = await api(`/tasks/${idOf(task)}/completion`, {
         method: "PATCH",
@@ -318,13 +333,30 @@ export default function App() {
     }
   }
 
-  async function removeTask(task) {
-    if (
-      !window.confirm(
-        `Permanently delete “${task.title}” and its linked focus history?`,
-      )
-    )
+  function setTaskCompletion(task, completed) {
+    if (!completed) {
+      void saveTaskCompletion(task, false);
       return;
+    }
+    setConfirmation({
+      title: "Mark this task as done?",
+      message: `“${task.title}” will move to your completed tasks.`,
+      confirmLabel: "Mark as done",
+      onConfirm: () => saveTaskCompletion(task, true),
+    });
+  }
+
+  function removeTask(task) {
+    setConfirmation({
+      title: "Delete this task?",
+      message: `“${task.title}” and its linked focus history will be permanently deleted.`,
+      confirmLabel: "Delete task",
+      danger: true,
+      onConfirm: () => deleteTask(task),
+    });
+  }
+
+  async function deleteTask(task) {
     try {
       await api(`/tasks/${idOf(task)}`, { method: "DELETE" });
       setTasks((current) =>
@@ -341,6 +373,23 @@ export default function App() {
     } catch (error) {
       setAppError(error.message);
     }
+  }
+
+  async function confirmPendingAction() {
+    if (!confirmation || confirmationBusy) return;
+    setConfirmationBusy(true);
+    try {
+      await confirmation.onConfirm();
+    } catch (error) {
+      setAppError(error.message);
+    } finally {
+      setConfirmation(null);
+      setConfirmationBusy(false);
+    }
+  }
+
+  function cancelPendingAction() {
+    if (!confirmationBusy) setConfirmation(null);
   }
 
   async function saveNote(dateKey, content) {
@@ -425,6 +474,37 @@ export default function App() {
         })
         .catch((error) => setAppError(error.message));
       return;
+    }
+    if (!("Notification" in window)) {
+      notify(
+        "This browser cannot show desktop alerts. The timer alert will stay in Daymark.",
+        "Desktop alerts unavailable",
+        "timer",
+      );
+    } else if (window.Notification.permission === "default") {
+      window.Notification.requestPermission()
+        .then((permission) => {
+          if (permission !== "granted") {
+            notify(
+              "Allow notifications for Daymark in your browser settings to get desktop timer alerts.",
+              "Desktop alerts are off",
+              "timer",
+            );
+          }
+        })
+        .catch(() => {
+          notify(
+            "Allow notifications for Daymark in your browser settings to get desktop timer alerts.",
+            "Desktop alerts are off",
+            "timer",
+          );
+        });
+    } else if (window.Notification.permission === "denied") {
+      notify(
+        "Allow notifications for Daymark in your browser settings to get desktop timer alerts.",
+        "Desktop alerts are off",
+        "timer",
+      );
     }
     const now = Date.now();
     if (focus?.mode === "break" && (startBreak || !taskId)) {
@@ -667,6 +747,17 @@ export default function App() {
           </button>
         ))}
       </nav>
+      {confirmation && (
+        <ConfirmationDialog
+          title={confirmation.title}
+          message={confirmation.message}
+          confirmLabel={confirmation.confirmLabel}
+          danger={confirmation.danger}
+          busy={confirmationBusy}
+          onCancel={cancelPendingAction}
+          onConfirm={confirmPendingAction}
+        />
+      )}
       {toast && (
         <div
           className={`toast toast-${toast.type}`}
@@ -691,7 +782,7 @@ export default function App() {
           >
             <X size={16} />
           </button>
-          <span className="toast-progress" />
+          {toast.type !== "timer" && <span className="toast-progress" />}
         </div>
       )}
     </div>
@@ -720,6 +811,101 @@ function LoadingScreen() {
         <span />
       </div>
       <p>Getting your workspace ready…</p>
+    </div>
+  );
+}
+
+function ConfirmationDialog({
+  title,
+  message,
+  confirmLabel,
+  danger = false,
+  busy = false,
+  onCancel,
+  onConfirm,
+}) {
+  const dialogRef = useRef(null);
+  const cancelRef = useRef(onCancel);
+  const busyRef = useRef(busy);
+  cancelRef.current = onCancel;
+  busyRef.current = busy;
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement;
+    const dialog = dialogRef.current;
+    dialog?.querySelector("[data-confirm-cancel]")?.focus();
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!busyRef.current) cancelRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const buttons = dialog?.querySelectorAll("button:not(:disabled)");
+      if (!buttons?.length) {
+        event.preventDefault();
+        dialog?.focus();
+        return;
+      }
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      previouslyFocused?.focus?.();
+    };
+  }, []);
+
+  return (
+    <div
+      className="confirm-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onCancel();
+      }}
+    >
+      <section
+        ref={dialogRef}
+        className="confirm-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-message"
+        tabIndex={-1}
+      >
+        <span className={`confirm-mark ${danger ? "danger" : ""}`}>
+          {danger ? <Trash2 size={19} /> : <CheckCircle2 size={19} />}
+        </span>
+        <h2 id="confirm-title">{title}</h2>
+        <p id="confirm-message">{message}</p>
+        <div className="confirm-actions">
+          <button
+            className="confirm-cancel"
+            data-confirm-cancel
+            disabled={busy}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            className={`confirm-submit ${danger ? "danger" : ""}`}
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? "Working…" : confirmLabel}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
